@@ -1,0 +1,4 @@
+video_cache.json
+*.tmp
+__pycache__/
+*.pyc
