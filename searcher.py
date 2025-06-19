@@ -32,10 +32,24 @@ class VideoPlayerApp:
         # Pulsante per scansionare gli SSD
         self.scan_button = Button(root, text="Scansiona SSD", command=self.scan_ssds)
         self.scan_button.pack(pady=10)
+
+        # Pulsante per ordinare per data
+        self.sort_date_button = Button(root, text="Ordina per Data ↑", command=self.sort_by_date)
+        self.sort_date_button.pack(pady=5)
+
+        # Pulsante per ordinare per dimensione
+        self.sort_size_button = Button(root, text="Ordina per Dimensione ↑", command=self.sort_by_size)
+        self.sort_size_button.pack(pady=5)
+
         
         # Elenco dei video
         self.video_files = []
         self.filtered_files = []
+
+        # Stato iniziale per l'ordinamento (True = crescente, False = decrescente)
+        self.sort_by_date_asc = True
+        self.sort_by_size_asc = True
+
     
     def scan_ssds(self):
         self.video_files.clear()
@@ -98,6 +112,33 @@ class VideoPlayerApp:
         if selected_index:
             video_path = self.filtered_files[selected_index[0]][1]
             os.startfile(video_path)  # Riproduce il video con il lettore predefinito di Windows (Film e TV o altro lettore predefinito)
+
+    # Ordina i video per data di modifica (clic alterna crescente/decrescente)
+    def sort_by_date(self):
+        self.sort_by_date_asc = not self.sort_by_date_asc  # Inverti lo stato
+        self.filtered_files.sort(
+            key=lambda x: os.path.getmtime(x[1]),
+            reverse=not self.sort_by_date_asc
+        )
+        # Aggiorna il testo del pulsante con freccia ↑/↓
+        self.sort_date_button.config(
+            text=f"Ordina per Data {'↑' if self.sort_by_date_asc else '↓'}"
+        )
+        self.update_video_list()
+
+    # Ordina i video per dimensione (clic alterna crescente/decrescente)
+    def sort_by_size(self):
+        self.sort_by_size_asc = not self.sort_by_size_asc  # Inverti lo stato
+        self.filtered_files.sort(
+            key=lambda x: os.path.getsize(x[1]),
+            reverse=not self.sort_by_size_asc
+        )
+        # Aggiorna il testo del pulsante con freccia ↑/↓
+        self.sort_size_button.config(
+            text=f"Ordina per Dimensione {'↑' if self.sort_by_size_asc else '↓'}"
+        )
+        self.update_video_list()
+
 
 if __name__ == "__main__":
     root = tk.Tk()
