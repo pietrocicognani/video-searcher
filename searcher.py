@@ -41,7 +41,11 @@ class VideoPlayerApp:
         self.sort_size_button = Button(root, text="Ordina per Dimensione ↑", command=self.sort_by_size)
         self.sort_size_button.pack(pady=5)
 
-        
+        # Etichetta per mostrare il numero di video trovati
+        # Viene aggiornata dopo ogni scansione o ricerca
+        self.counter_label = tk.Label(root, text="Video trovati: 0", font=("Arial", 10))
+        self.counter_label.pack(pady=5)
+
         # Elenco dei video
         self.video_files = []
         self.filtered_files = []
@@ -49,6 +53,13 @@ class VideoPlayerApp:
         # Stato iniziale per l'ordinamento (True = crescente, False = decrescente)
         self.sort_by_date_asc = True
         self.sort_by_size_asc = True
+        
+    def update_counter(self):
+        # Conta quanti file video ci sono attualmente nella lista filtrata
+        count = len(self.filtered_files)
+
+        # Aggiorna il testo dell'etichetta con il numero
+        self.counter_label.config(text=f"Video trovati: {count}")
 
     
     def scan_ssds(self):
@@ -56,7 +67,7 @@ class VideoPlayerApp:
         self.filtered_files.clear()
         self.video_listbox.delete(0, tk.END)
 
-        ssd_paths = ["D:/", "E:/", "F:/"]  # Cambia con le tue lettere di unità SSD
+        ssd_paths = ["E:/"]  # Cambia con le tue lettere di unità SSD
 
         for ssd in ssd_paths:
             for root, _, files in os.walk(ssd):
@@ -69,11 +80,48 @@ class VideoPlayerApp:
         self.update_video_list()
     
     def update_video_list(self):
+        # Svuota la Listbox prima di aggiornarla
         self.video_listbox.delete(0, tk.END)
+
+        # Usa font monospazio per allineare il testo in colonna (opzionale ma consigliato)
+        self.video_listbox.config(font=("Courier New", 10))
+
+        # Itera su ogni file filtrato
         for video in self.filtered_files:
             video_name, video_path = video
-            # Visualizza il percorso completo del video
-            self.video_listbox.insert(tk.END, video_path)  # Inserisce il percorso completo del video
+            try:
+                # Ottieni la dimensione del file in byte
+                size_bytes = os.path.getsize(video_path)
+
+                # Determina l'unità più adatta (KB, MB, GB, TB)
+                if size_bytes < 1024:
+                    size_str = f"{size_bytes} B"
+                elif size_bytes < 1024 ** 2:
+                    size_str = f"{size_bytes / 1024:.2f} KB"
+                elif size_bytes < 1024 ** 3:
+                    size_str = f"{size_bytes / (1024 ** 2):.2f} MB"
+                elif size_bytes < 1024 ** 4:
+                    size_str = f"{size_bytes / (1024 ** 3):.2f} GB"
+                else:
+                    size_str = f"{size_bytes / (1024 ** 4):.2f} TB"
+                max_path_length = 30
+                # Puoi regolarlo a piacere
+                short_path = video_path if len(video_path) <= max_path_length else "..." + video_path[-max_path_length:]
+                display_text = f"{short_path:<100} | {size_str}"              
+                # Prepara la riga formattata: percorso + dimensione formattata
+                display_text = f"{video_path:<100} | {size_str}"
+
+            except Exception as e:
+                # In caso di errore (es. file mancante)
+                display_text = f"{video_path:<100} | Errore lettura"
+
+            # Inserisce la riga nella lista
+            self.video_listbox.insert(tk.END, display_text)
+            # Aggiorna il contatore dei video trovati
+            self.update_counter()
+
+
+
 
     def search_videos(self, event):
         # Ottieni il testo di ricerca e lo converti in minuscolo
