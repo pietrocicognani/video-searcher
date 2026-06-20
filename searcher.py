@@ -19,7 +19,7 @@ class VideoPlayerApp:
     def __init__(self, root):
 
         self.root = root
-        self.root.title("searcher mark 1 - Dark Mode")
+        self.root.title("searcher mark 2 - Dark Mode")
         self.root.geometry("1500x800")
 
         # Tema
@@ -45,6 +45,9 @@ class VideoPlayerApp:
         self.word_map = defaultdict(list)
 
         self.video_metadata = {}
+
+        # Parole escluse permanentemente
+        self.ignored_words = set()
 
         # Ordinamento
 
@@ -250,6 +253,21 @@ class VideoPlayerApp:
             expand=True
         )
 
+        # Pulsante elimina parola
+        self.delete_word_button = Button(
+            right_frame,
+            text="Elimina parola",
+            command=self.ignore_selected_word,
+            bg=self.button_bg,
+            fg=self.fg_color,
+            activebackground=self.highlight_color,
+            relief="flat"
+        )
+
+        self.delete_word_button.pack(
+            pady=5
+        )
+
         # Carica cache
 
         self.load_cache()
@@ -289,6 +307,7 @@ class VideoPlayerApp:
             )
 
             self.video_metadata = data["video_metadata"]
+            self.ignored_words = set(data.get("ignored_words", []))
 
             self.update_video_list()
             self.update_words_display()
@@ -318,7 +337,8 @@ class VideoPlayerApp:
 
             "word_map": dict(self.word_map),
 
-            "video_metadata": self.video_metadata
+            "video_metadata": self.video_metadata,
+            "ignored_words": list(self.ignored_words)
         }
 
         with open(
@@ -453,6 +473,9 @@ class VideoPlayerApp:
             "sub",
             "multi"
         }
+
+        # Aggiunge le parole escluse salvate nel JSON
+        ignored.update(self.ignored_words)
 
         for video_name, video_path in self.video_files:
 
@@ -664,6 +687,38 @@ class VideoPlayerApp:
         )
 
         self.update_video_list()
+
+
+
+    # Elimina parola selezionata
+
+    def ignore_selected_word(self):
+
+        try:
+
+            line = self.words_text.get(
+                "insert linestart",
+                "insert lineend"
+            ).strip()
+
+            if not line:
+                return
+
+            word = line.split()[0].lower()
+
+            self.ignored_words.add(word)
+
+            self.build_word_index()
+
+            self.update_words_display()
+
+            self.save_cache()
+
+            print(f"Parola esclusa definitivamente: {word}")
+
+        except Exception as e:
+
+            print("Errore:", e)
 
 
 # Main
