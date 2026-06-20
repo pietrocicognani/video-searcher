@@ -3,7 +3,7 @@ import re
 import json
 import tkinter as tk
 
-from collections import Counter, defaultdict
+
 from tkinter import (
     Listbox,
     Scrollbar,
@@ -19,7 +19,7 @@ class VideoPlayerApp:
     def __init__(self, root):
 
         self.root = root
-        self.root.title("searcher mark 2 - Dark Mode")
+        self.root.title("Searcher Mark 3 - Dark Mode")
         self.root.geometry("1500x800")
 
         # Tema
@@ -41,13 +41,10 @@ class VideoPlayerApp:
         self.video_files = []
         self.filtered_files = []
 
-        self.word_counter = Counter()
-        self.word_map = defaultdict(list)
-
         self.video_metadata = {}
 
-        # Parole escluse permanentemente
-        self.ignored_words = set()
+        # Parole salvate manualmente dall'utente: {parola: conteggio}
+        self.saved_words = {}  # es. {"vacanze 2023": 12}
 
         # Ordinamento
 
@@ -214,7 +211,7 @@ class VideoPlayerApp:
             self.play_video
         )
 
-        # Lista parole
+        # Lista ricerche salvate
 
         right_frame = Frame(
             main_frame,
@@ -229,7 +226,7 @@ class VideoPlayerApp:
 
         words_label = tk.Label(
             right_frame,
-            text="Parole più frequenti",
+            text="Ricerche salvate",
             bg=self.bg_color,
             fg=self.fg_color,
             font=("Arial", 12, "bold")
@@ -239,34 +236,63 @@ class VideoPlayerApp:
             pady=5
         )
 
-        self.words_text = Text(
+        # Entry per aggiungere nuova parola
+        self.new_word_var = tk.StringVar()
+        self.new_word_entry = Entry(
             right_frame,
-            width=35,
+            textvariable=self.new_word_var,
+            width=28,
             bg=self.entry_bg,
             fg=self.fg_color,
-            relief="flat",
-            font=("Courier New", 10)
+            insertbackground=self.fg_color,
+            relief="flat"
         )
+        self.new_word_entry.pack(pady=(0, 3))
+        self.new_word_entry.bind("<Return>", lambda e: self.add_saved_word())
 
-        self.words_text.pack(
-            fill=tk.Y,
-            expand=True
-        )
-
-        # Pulsante elimina parola
-        self.delete_word_button = Button(
+        self.add_word_button = Button(
             right_frame,
-            text="Elimina parola",
-            command=self.ignore_selected_word,
+            text="Aggiungi ricerca",
+            command=self.add_saved_word,
             bg=self.button_bg,
             fg=self.fg_color,
             activebackground=self.highlight_color,
             relief="flat"
         )
+        self.add_word_button.pack(pady=(0, 5))
 
-        self.delete_word_button.pack(
-            pady=5
+        self.words_listbox = Listbox(
+            right_frame,
+            width=35,
+            bg=self.entry_bg,
+            fg=self.fg_color,
+            selectbackground=self.highlight_color,
+            selectforeground=self.fg_color,
+            relief="flat",
+            font=("Courier New", 10)
         )
+        self.words_listbox.pack(fill=tk.Y, expand=True)
+        self.words_listbox.bind("<Double-Button-1>", self.search_from_saved)
+
+        # Pulsante elimina parola
+        self.delete_word_button = Button(
+            right_frame,
+            text="Elimina ricerca",
+            command=self.delete_saved_word,
+            bg=self.button_bg,
+            fg=self.fg_color,
+            activebackground=self.highlight_color,
+            relief="flat"
+        )
+        self.delete_word_button.pack(pady=5)
+
+        tk.Label(
+            right_frame,
+            text="(doppio click = cerca)",
+            bg=self.bg_color,
+            fg="#888888",
+            font=("Arial", 8)
+        ).pack()
 
         # Carica cache
 
@@ -297,17 +323,13 @@ class VideoPlayerApp:
 
             self.filtered_files = self.video_files.copy()
 
-            self.word_counter = Counter(
-                data["word_counter"]
-            )
+            self.video_metadata = data.get("video_metadata", {})
 
-            self.word_map = defaultdict(
-                list,
-                data["word_map"]
-            )
-
-            self.video_metadata = data["video_metadata"]
-            self.ignored_words = set(data.get("ignored_words", []))
+            # Carica le parole salvate manualmente e ricalcola i conteggi
+            saved = data.get("saved_words", {})
+            self.saved_words = {}
+            for word in saved:
+                self.saved_words[word] = self._count_files_for_term(word)
 
             self.update_video_list()
             self.update_words_display()
@@ -333,12 +355,8 @@ class VideoPlayerApp:
                 for name, path in self.video_files
             ],
 
-            "word_counter": dict(self.word_counter),
-
-            "word_map": dict(self.word_map),
-
             "video_metadata": self.video_metadata,
-            "ignored_words": list(self.ignored_words)
+            "saved_words": self.saved_words
         }
 
         with open(
@@ -429,7 +447,9 @@ class VideoPlayerApp:
 
         self.filtered_files = self.video_files.copy()
 
-        self.build_word_index()
+        # Ricalcola conteggi per tutte le parole salvate
+        for word in self.saved_words:
+            self.saved_words[word] = self._count_files_for_term(word)
 
         self.update_video_list()
 
@@ -439,100 +459,71 @@ class VideoPlayerApp:
 
         print("Scansione completata.")
 
-    # Costruzione indice parole
+    # Conta file per un termine di ricerca
 
-    def build_word_index(self):
-
-        self.word_counter.clear()
-        self.word_map.clear()
-
-        ignored = {
-
-            "1080p",
-            "720p",
-            "2160p",
-            "480p",
-
-            "x264",
-            "x265",
-            "h264",
-            "h265",
-
-            "bluray",
-            "brrip",
-            "webrip",
-            "webdl",
-
-            "mkv",
-            "mp4",
-            "avi",
-            "mov",
-
-            "ita",
-            "eng",
-            "sub",
-            "multi"
-        }
-
-        # Aggiunge le parole escluse salvate nel JSON
-        ignored.update(self.ignored_words)
-
+    def _count_files_for_term(self, term):
+        """Conta quanti file contengono il termine (case-insensitive, multi-parola)."""
+        term_lower = term.lower()
+        terms = term_lower.split()
+        count = 0
         for video_name, video_path in self.video_files:
+            name = video_name.lower()
+            if all(t in name for t in terms):
+                count += 1
+        return count
 
-            name = os.path.splitext(
-                video_name
-            )[0]
+    # Aggiungi parola salvata
 
-            words = re.findall(
-                r'\b[a-zA-Z0-9]+\b',
-                name.lower()
-            )
+    def add_saved_word(self):
+        word = self.new_word_var.get().strip()
+        if not word:
+            return
+        word_lower = word.lower()
+        count = self._count_files_for_term(word_lower)
+        self.saved_words[word_lower] = count
+        self.new_word_var.set("")
+        self.update_words_display()
+        self.save_cache()
+        print(f"Parola aggiunta: {word_lower} ({count} file)")
 
-            unique_words = set()
+    # Elimina parola salvata
 
-            for word in words:
+    def delete_saved_word(self):
+        selection = self.words_listbox.curselection()
+        if not selection:
+            return
+        line = self.words_listbox.get(selection[0])
+        word = line.split("  ")[0].strip().lower()
+        if word in self.saved_words:
+            del self.saved_words[word]
+            self.update_words_display()
+            self.save_cache()
+            print(f"Parola eliminata: {word}")
 
-                if len(word) < 3:
-                    continue
+    # Cerca da parola salvata (doppio click)
 
-                if word in ignored:
-                    continue
+    def search_from_saved(self, event=None):
+        selection = self.words_listbox.curselection()
+        if not selection:
+            return
+        line = self.words_listbox.get(selection[0])
+        word = line.split("  ")[0].strip()
+        self.search_var.set(word)
+        self.search_videos()
 
-                self.word_counter[word] += 1
-
-                if word not in unique_words:
-
-                    self.word_map[word].append(
-                        video_path
-                    )
-
-                    unique_words.add(word)
-
-        print("\nPAROLE PIÙ FREQUENTI:\n")
-
-        for word, count in self.word_counter.most_common(30):
-
-            print(
-                f"{word:<20} {count}"
-            )
-
-    # Aggiorna display parole
+    # Aggiorna display parole salvate
 
     def update_words_display(self):
 
-        self.words_text.delete(
-            "1.0",
-            tk.END
-        )
+        self.words_listbox.delete(0, tk.END)
 
-        for word, count in self.word_counter.most_common(100):
-
-            line = f"{word:<20} {count}\n"
-
-            self.words_text.insert(
-                tk.END,
-                line
-            )
+        for word, count in sorted(
+            self.saved_words.items(),
+            key=lambda x: x[1],
+            reverse=True
+        ):
+            line = f"{word}  [{count}]"
+            self.words_listbox.insert(tk.END, line)
 
     # Aggiorna lista video
 
@@ -690,35 +681,7 @@ class VideoPlayerApp:
 
 
 
-    # Elimina parola selezionata
 
-    def ignore_selected_word(self):
-
-        try:
-
-            line = self.words_text.get(
-                "insert linestart",
-                "insert lineend"
-            ).strip()
-
-            if not line:
-                return
-
-            word = line.split()[0].lower()
-
-            self.ignored_words.add(word)
-
-            self.build_word_index()
-
-            self.update_words_display()
-
-            self.save_cache()
-
-            print(f"Parola esclusa definitivamente: {word}")
-
-        except Exception as e:
-
-            print("Errore:", e)
 
 
 # Main
