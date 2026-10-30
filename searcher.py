@@ -7,10 +7,10 @@ from PyQt6.QtWidgets import (
     QVBoxLayout, QLabel, QPushButton, QLineEdit,
     QListWidget, QListWidgetItem, QFrame, QSizePolicy,
     QHeaderView, QTableWidget, QTableWidgetItem,
-    QAbstractItemView, QScrollArea
+    QAbstractItemView, QScrollArea, QMessageBox
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QSize
-from PyQt6.QtGui import QFont, QColor, QIcon, QPalette
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QSize, QUrl
+from PyQt6.QtGui import QFont, QColor, QIcon, QPalette, QDesktopServices
 
 
 # Palette (stile Radarr / Sonarr)
@@ -277,40 +277,47 @@ QStatusBar {{
 
 class ScanThread(QThread):
     progress   = pyqtSignal(str)
-    finished   = pyqtSignal(list, dict)
+    scan_finished = pyqtSignal(list, dict)
+    scan_failed = pyqtSignal(str)
 
     SSD_PATHS  = ["F:/"]
     FORMATS    = (".mp4", ".mkv", ".avi", ".mov")
 
     def run(self):
-        videos   = []
+        videos = []
         metadata = {}
 
-        for ssd in self.SSD_PATHS:
-            if not os.path.exists(ssd):
-                self.progress.emit(f"Percorso non trovato: {ssd}")
-                continue
+        try:
+            for ssd in self.SSD_PATHS:
+                if not os.path.isdir(ssd):
+                    self.progress.emit(f"Percorso non disponibile: {ssd}")
+                    continue
 
-            for root_dir, _, files in os.walk(ssd):
-                for file in files:
-                    if file.lower().endswith(self.FORMATS):
-                        full_path = os.path.join(root_dir, file)
-                        videos.append((file, full_path))
-                        try:
-                            metadata[full_path] = {
-                                "size":  os.path.getsize(full_path),
-                                "mtime": os.path.getmtime(full_path),
-                            }
-                        except Exception:
-                            metadata[full_path] = {"size": 0, "mtime": 0}
+                for root_dir, _, files in os.walk(ssd, onerror=lambda error: self.progress.emit(
+                    f"Cartella non accessibile: {error.filename or error}"
+                )):
+                    for file_name in files:
+                        if file_name.lower().endswith(self.FORMATS):
+                            full_path = os.path.join(root_dir, file_name)
+                            try:
+                                stat = os.stat(full_path)
+                                videos.append((file_name, full_path))
+                                metadata[full_path] = {
+                                    "size": stat.st_size,
+                                    "mtime": stat.st_mtime,
+                                }
+                            except OSError as error:
+                                self.progress.emit(f"File ignorato: {full_path} ({error})")
 
-        self.progress.emit(f"Trovati {len(videos)} file.")
-        self.finished.emit(videos, metadata)
+            self.progress.emit(f"Trovati {len(videos)} file.")
+            self.scan_finished.emit(videos, metadata)
+        except Exception as error:
+            self.scan_failed.emit(str(error))
 
 
 # Main window
 
-class SearcherMark3(QMainWindow):
+class SearcherMark4(QMainWindow):
 
     CACHE_FILE = "video_cache.json"
 
@@ -524,7 +531,14 @@ class SearcherMark3(QMainWindow):
             with open(self.CACHE_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
 
-            self.video_files    = [(v["name"], v["path"]) for v in data["videos"]]
+            if not isinstance(data, dict) or not isinstance(data.get("videos", []), list):
+                raise ValueError("Formato della cache non valido")
+
+            self.video_files    = [
+                (v["name"], v["path"]) for v in data.get("videos", [])
+                if isinstance(v, dict) and isinstance(v.get("name"), str)
+                and isinstance(v.get("path"), str)
+            ]
             self.filtered_files = self.video_files.copy()
             self.video_metadata = data.get("video_metadata", {})
 
@@ -555,8 +569,18 @@ class SearcherMark3(QMainWindow):
             "video_metadata": self.video_metadata,
             "saved_words": self.saved_words,
         }
-        with open(self.CACHE_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
+        temp_file = self.CACHE_FILE + ".tmp"
+        try:
+            with open(temp_file, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+            os.replace(temp_file, self.CACHE_FILE)
+        except (OSError, TypeError, ValueError) as error:
+            self.statusBar().showMessage(f"  Impossibile salvare la cache: {error}")
+            try:
+                if os.path.exists(temp_file):
+                    os.remove(temp_file)
+            except OSError:
+                pass
 
     # Scansione
 
@@ -567,7 +591,8 @@ class SearcherMark3(QMainWindow):
 
         self._scan_thread = ScanThread()
         self._scan_thread.progress.connect(lambda m: self.statusBar().showMessage(f"  {m}"))
-        self._scan_thread.finished.connect(self.on_scan_done)
+        self._scan_thread.scan_finished.connect(self.on_scan_done)
+        self._scan_thread.scan_failed.connect(self.on_scan_failed)
         self._scan_thread.start()
 
     def on_scan_done(self, videos, metadata):
@@ -586,6 +611,12 @@ class SearcherMark3(QMainWindow):
         self.btn_scan.setText("⟳   Scansiona SSD")
         self.btn_scan.setEnabled(True)
         self.statusBar().showMessage(f"  Scansione completata  ·  {len(self.video_files)} file trovati")
+
+    def on_scan_failed(self, message):
+        self.btn_scan.setText("⟳   Scansiona SSD")
+        self.btn_scan.setEnabled(True)
+        self.statusBar().showMessage(f"  Scansione non completata: {message}")
+        QMessageBox.warning(self, "Errore durante la scansione", message)
 
     # Ricerca
 
@@ -622,7 +653,6 @@ class SearcherMark3(QMainWindow):
             self.table.setItem(row, 0, item_path)
             self.table.setItem(row, 1, item_size)
 
-        self.table.setRowHeight
 
     def _update_badges(self):
         self.badge_total.setText(f"{len(self.video_files):,} totali")
@@ -672,7 +702,11 @@ class SearcherMark3(QMainWindow):
         row = index.row()
         if 0 <= row < len(self.filtered_files):
             path = self.filtered_files[row][1]
-            os.startfile(path)
+            if not os.path.isfile(path):
+                QMessageBox.warning(self, "File non disponibile", f"Il file non esiste o non è accessibile:\n{path}")
+                return
+            if not QDesktopServices.openUrl(QUrl.fromLocalFile(os.path.abspath(path))):
+                QMessageBox.warning(self, "Impossibile aprire il file", f"Il sistema non è riuscito ad aprire:\n{path}")
 
     # Ricerche salvate
 
@@ -746,7 +780,7 @@ if __name__ == "__main__":
     app.setStyle("Fusion")
     app.setStyleSheet(STYLESHEET)
 
-    window = SearcherMark3()
+    window = SearcherMark4()
     window.show()
 
     sys.exit(app.exec())
