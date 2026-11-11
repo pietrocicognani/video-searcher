@@ -5,13 +5,11 @@ import json
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QLabel,
     QPushButton, QLineEdit, QListWidget, QListWidgetItem, QFrame, QHeaderView,
-    QTableWidget, QTableWidgetItem, QAbstractItemView, QMessageBox,
+    QTableWidget, QTableWidgetItem, QAbstractItemView, QMessageBox, QFileDialog,
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QUrl
 from PyQt6.QtGui import QColor, QDesktopServices
 
-# Unità/cartelle da scansionare
-DRIVES = ["F:/"]
 VIDEO_EXT = (".mp4", ".mkv", ".avi", ".mov")
 CACHE_FILE = "video_cache.json"
 
@@ -74,10 +72,11 @@ QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
 
 #RightPanel {{ background: {BG_SIDE}; border-left: 1px solid {BORDER}; min-width: 240px; max-width: 260px; }}
 #PanelTitle {{ color: {TEXT_MUTED}; font-size: 10px; font-weight: bold; letter-spacing: 1px; padding: 14px 16px 4px 16px; }}
-#SavedList {{ background: transparent; border: none; outline: none; }}
-#SavedList::item {{ border-radius: 6px; padding: 5px 8px; margin: 1px 6px; }}
-#SavedList::item:hover {{ background: {BG_INPUT}; }}
-#SavedList::item:selected {{ background: {ACCENT_DIM}; color: {ACCENT_HOVER}; }}
+#SavedList, #FolderList {{ background: transparent; border: none; outline: none; }}
+#SavedList::item, #FolderList::item {{ border-radius: 6px; padding: 5px 8px; margin: 1px 6px; }}
+#SavedList::item:hover, #FolderList::item:hover {{ background: {BG_INPUT}; }}
+#SavedList::item:selected, #FolderList::item:selected {{ background: {ACCENT_DIM}; color: {ACCENT_HOVER}; }}
+#FolderList::item {{ margin: 1px 0; font-size: 12px; }}
 #HSep {{ background: {BORDER}; max-height: 1px; min-height: 1px; }}
 
 QStatusBar {{ background: {BG_SIDE}; color: {TEXT_MUTED}; border-top: 1px solid {BORDER}; font-size: 11px; }}
@@ -97,20 +96,62 @@ def matches(name, terms):
     return all(t in name for t in terms)
 
 
+def normalizza(percorso):
+    """Percorso assoluto e, su Windows, senza differenze tra maiuscole e minuscole."""
+    return os.path.normcase(os.path.abspath(percorso))
+
+
+def dentro(percorso, cartella):
+    """True se `percorso` è `cartella` stessa o sta al suo interno."""
+    percorso, cartella = normalizza(percorso), normalizza(cartella)
+    try:
+        return os.path.commonpath([percorso, cartella]) == cartella
+    except ValueError:  # su Windows: dischi diversi
+        return False
+
+
+def aggiungi_cartella(cartelle, nuova):
+    """Restituisce (elenco aggiornato, messaggio) senza scansionare due volte gli stessi file:
+    una sottocartella di una già presente non serve, e una cartella che ne contiene
+    altre già presenti le sostituisce."""
+    nuova = os.path.normpath(nuova)
+    for cartella in cartelle:
+        if dentro(nuova, cartella):
+            return cartelle, f"{nuova} è già inclusa in {cartella}"
+    restano = [c for c in cartelle if not dentro(c, nuova)]
+    sostituite = len(cartelle) - len(restano)
+    messaggio = f"Aggiunta {nuova}"
+    if sostituite == 1:
+        messaggio += " (al posto di una sua sottocartella)"
+    elif sostituite > 1:
+        messaggio += f" (al posto di {sostituite} sue sottocartelle)"
+    return restano + [nuova], messaggio
+
+
+def etichetta(cartella, massimo=26):
+    """Nella barra laterale c'è poco spazio: mostro la parte finale del percorso."""
+    return cartella if len(cartella) <= massimo else "…" + cartella[-(massimo - 1):]
+
+
 class ScanThread(QThread):
-    """Scansione dei dischi in un thread separato, così la UI non si blocca."""
+    """Scansione delle cartelle in un thread separato, così la UI non si blocca."""
     progress = pyqtSignal(str)
-    scan_finished = pyqtSignal(list, dict)
+    scan_finished = pyqtSignal(list, dict, list)  # video, metadati, cartelle non trovate
     scan_failed = pyqtSignal(str)
 
+    def __init__(self, cartelle):
+        super().__init__()
+        self.cartelle = list(cartelle)  # copia: l'elenco può cambiare mentre scansiono
+
     def run(self):
-        videos, metadata = [], {}
+        videos, metadata, mancanti = [], {}, []
         try:
-            for drive in DRIVES:
-                if not os.path.isdir(drive):
-                    self.progress.emit(f"Percorso non disponibile: {drive}")
+            for cartella in self.cartelle:
+                if not os.path.isdir(cartella):  # es. disco esterno scollegato
+                    mancanti.append(cartella)
                     continue
-                for folder, _, files in os.walk(drive):
+                self.progress.emit(f"Scansione di {cartella}...")
+                for folder, _, files in os.walk(cartella):
                     for f in files:
                         if not f.lower().endswith(VIDEO_EXT):
                             continue
@@ -121,7 +162,7 @@ class ScanThread(QThread):
                             continue
                         videos.append((f, path))
                         metadata[path] = {"size": st.st_size, "mtime": st.st_mtime}
-            self.scan_finished.emit(videos, metadata)
+            self.scan_finished.emit(videos, metadata, mancanti)
         except Exception as e:
             self.scan_failed.emit(str(e))
 
@@ -129,13 +170,14 @@ class ScanThread(QThread):
 class Searcher(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Searcher · Mark 4")
+        self.setWindowTitle("Searcher")
         self.resize(1420, 820)
 
         self.video_files = []
         self.filtered_files = []
         self.metadata = {}
         self.saved_searches = {}
+        self.cartelle = []  # le cartelle da scansionare, scelte dall'utente
         self.sort_col = -1
         self.sort_asc = True
 
@@ -162,7 +204,7 @@ class Searcher(QMainWindow):
         body_lay.addWidget(self.build_saved_panel())
         layout.addWidget(body, 1)
 
-        self.statusBar().showMessage("  Pronto — carica la cache o scansiona l'SSD")
+        self.statusBar().showMessage("  Pronto — scegli le cartelle e premi Scansiona")
 
     def build_header(self):
         header = QFrame()
@@ -198,14 +240,32 @@ class Searcher(QMainWindow):
         lay.setContentsMargins(10, 16, 10, 16)
         lay.setSpacing(4)
 
-        self.btn_scan = self.side_button("⟳   Scansiona SSD", self.start_scan)
+        self.btn_scan = self.side_button("⟳   Scansiona", self.start_scan)
         self.btn_date = self.side_button("↕   Ordina per Data", self.sort_by_date)
         self.btn_size = self.side_button("↕   Ordina per Dimensione", self.sort_by_size)
         for b in (self.btn_scan, self.btn_date, self.btn_size):
             lay.addWidget(b)
-        lay.addStretch()
 
-        ver = QLabel("Mark 4 · PyQt6")
+        # Cartelle da scansionare
+        sep = QFrame()
+        sep.setObjectName("HSep")
+        lay.addSpacing(8)
+        lay.addWidget(sep)
+        titolo = QLabel("CARTELLE")
+        titolo.setObjectName("PanelTitle")
+        lay.addWidget(titolo)
+
+        self.folder_list = QListWidget()
+        self.folder_list.setObjectName("FolderList")
+        self.folder_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        lay.addWidget(self.folder_list, 1)
+
+        self.btn_add_folder = self.side_button("+   Aggiungi cartella", self.scegli_cartella)
+        self.btn_remove_folder = self.side_button("−   Rimuovi selezionata", self.rimuovi_cartella)
+        lay.addWidget(self.btn_add_folder)
+        lay.addWidget(self.btn_remove_folder)
+
+        ver = QLabel("v6 · PyQt6")
         ver.setStyleSheet(f"color:{TEXT_MUTED}; font-size:10px; padding:6px;")
         lay.addWidget(ver)
         return sidebar
@@ -284,11 +344,14 @@ class Searcher(QMainWindow):
 
     def load_cache(self):
         if not os.path.exists(CACHE_FILE):
-            self.statusBar().showMessage("  Cache non trovata — scansiona l'SSD per iniziare")
+            self.statusBar().showMessage("  Per iniziare aggiungi una cartella e premi Scansiona")
             return
         try:
             with open(CACHE_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
+            # le cache create prima di questa versione non hanno l'elenco delle cartelle
+            self.cartelle = [c for c in data.get("cartelle", []) if isinstance(c, str)]
+            self.refresh_folder_list()
             self.video_files = [(v["name"], v["path"]) for v in data.get("videos", [])]
             self.metadata = data.get("video_metadata", {})
             self.filtered_files = self.video_files.copy()
@@ -305,6 +368,7 @@ class Searcher(QMainWindow):
             "videos": [{"name": n, "path": p} for n, p in self.video_files],
             "video_metadata": self.metadata,
             "saved_words": self.saved_searches,
+            "cartelle": self.cartelle,
         }
         tmp = CACHE_FILE + ".tmp"
         try:
@@ -318,15 +382,21 @@ class Searcher(QMainWindow):
     # ---------- scansione ----------
 
     def start_scan(self):
+        if not self.cartelle:
+            self.scegli_cartella()
+            if not self.cartelle:  # finestra chiusa senza scegliere
+                return
         self.btn_scan.setText("⟳   Scansione in corso...")
-        self.btn_scan.setEnabled(False)
-        self.scan_thread = ScanThread()
+        # durante la scansione l'elenco delle cartelle non si tocca
+        for b in (self.btn_scan, self.btn_add_folder, self.btn_remove_folder):
+            b.setEnabled(False)
+        self.scan_thread = ScanThread(self.cartelle)
         self.scan_thread.progress.connect(lambda m: self.statusBar().showMessage(f"  {m}"))
         self.scan_thread.scan_finished.connect(self.on_scan_done)
         self.scan_thread.scan_failed.connect(self.on_scan_failed)
         self.scan_thread.start()
 
-    def on_scan_done(self, videos, metadata):
+    def on_scan_done(self, videos, metadata, mancanti):
         self.video_files = videos
         self.metadata = metadata
         self.filtered_files = videos.copy()
@@ -335,15 +405,57 @@ class Searcher(QMainWindow):
         self.refresh_all()
         self.save_cache()
         self.reset_scan_button()
-        self.statusBar().showMessage(f"  Scansione completata · {len(videos)} file trovati")
+        messaggio = f"  Scansione completata · {len(videos)} file trovati"
+        if mancanti:
+            messaggio += " · non trovate: " + ", ".join(mancanti)
+        self.statusBar().showMessage(messaggio)
 
     def on_scan_failed(self, message):
         self.reset_scan_button()
         QMessageBox.warning(self, "Errore durante la scansione", message)
 
     def reset_scan_button(self):
-        self.btn_scan.setText("⟳   Scansiona SSD")
-        self.btn_scan.setEnabled(True)
+        self.btn_scan.setText("⟳   Scansiona")
+        for b in (self.btn_scan, self.btn_add_folder, self.btn_remove_folder):
+            b.setEnabled(True)
+
+    # ---------- cartelle ----------
+
+    def scegli_cartella(self):
+        partenza = self.cartelle[-1] if self.cartelle else os.path.expanduser("~")
+        scelta = QFileDialog.getExistingDirectory(self, "Scegli la cartella da scansionare", partenza)
+        if not scelta:
+            return
+        self.cartelle, messaggio = aggiungi_cartella(self.cartelle, scelta)
+        self.refresh_folder_list()
+        self.save_cache()
+        self.statusBar().showMessage(f"  {messaggio} — premi Scansiona per cercare i video")
+
+    def rimuovi_cartella(self):
+        item = self.folder_list.currentItem()
+        if not item:
+            return
+        cartella = item.data(Qt.ItemDataRole.UserRole)
+        self.cartelle = [c for c in self.cartelle if c != cartella]
+        # tolgo subito i video che venivano da lì, senza aspettare una nuova scansione
+        prima = len(self.video_files)
+        self.video_files = [v for v in self.video_files if not dentro(v[1], cartella)]
+        self.metadata = {p: m for p, m in self.metadata.items() if not dentro(p, cartella)}
+        for s in self.saved_searches:
+            self.saved_searches[s] = self.count_matches(s)
+        self.refresh_folder_list()
+        self.refresh_saved_list()
+        self.search_videos()  # riapplica la ricerca in corso sui file rimasti
+        self.save_cache()
+        self.statusBar().showMessage(f"  Rimossa {cartella} · {prima - len(self.video_files)} file tolti dall'elenco")
+
+    def refresh_folder_list(self):
+        self.folder_list.clear()
+        for cartella in self.cartelle:
+            item = QListWidgetItem(etichetta(cartella))
+            item.setData(Qt.ItemDataRole.UserRole, cartella)
+            item.setToolTip(cartella)
+            self.folder_list.addItem(item)
 
     # ---------- ricerca e tabella ----------
 
